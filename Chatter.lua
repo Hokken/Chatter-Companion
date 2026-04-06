@@ -409,22 +409,22 @@ function Chatter:BuildFrame()
         self:ClearFocus()
     end)
 
-    local save = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    save:SetWidth(120)
-    save:SetHeight(26)
-    save:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -18, 16)
-    save:SetText("Save Changes")
-    save:SetScript("OnClick", function()
-        Chatter:SaveProfile()
-    end)
-
     local closeButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
     closeButton:SetWidth(90)
     closeButton:SetHeight(26)
-    closeButton:SetPoint("RIGHT", save, "LEFT", -10, 0)
+    closeButton:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -18, 16)
     closeButton:SetText("Close")
     closeButton:SetScript("OnClick", function()
         frame:Hide()
+    end)
+
+    local save = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    save:SetWidth(120)
+    save:SetHeight(26)
+    save:SetPoint("RIGHT", closeButton, "LEFT", -10, 0)
+    save:SetText("Save Changes")
+    save:SetScript("OnClick", function()
+        Chatter:SaveProfile()
     end)
 
     local status = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -689,6 +689,7 @@ end)
 
 Chatter:RegisterEvent("PLAYER_LOGIN")
 Chatter:RegisterEvent("PLAYER_LOGOUT")
+
 
 
 
