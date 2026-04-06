@@ -1,0 +1,8 @@
+## Interface: 30300
+## Title: Chatter
+## Notes: Companion UI for mod-llm-chatter bot traits and tone
+## Author: mod-llm-chatter
+## Version: 1.0.0
+## SavedVariablesPerCharacter: ChatterDB
+
+Chatter.lua
