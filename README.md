@@ -1,4 +1,8 @@
-﻿# Chatter
+﻿<p align="center">
+  <img src="images/chatter.png" alt="The Chatters" width="100%">
+</p>
+
+# Chatter Companion 
 
 Chatter is a World of Warcraft 3.3.5 addon that acts as a companion UI for the `mod-llm-chatter` AzerothCore module.
 
