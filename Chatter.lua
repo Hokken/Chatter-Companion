@@ -45,6 +45,9 @@ function Chatter:Decode(value)
 end
 
 function Chatter:GetActivePanel()
+    if self.frame and self.frame:IsShown() then
+        return self.frame
+    end
     if self.traitsPanel and self.traitsPanel:IsShown() then
         return self.traitsPanel
     end
