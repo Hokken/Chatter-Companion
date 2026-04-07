@@ -19,7 +19,7 @@ It lets the player manage persistent personality traits for bots they have group
 
 This addon is not a standalone system.
 
-It depends on the server-side [`mod-llm-chatter`](https://github.com/Calwen-Hokken/mod-llm-chatter) module and its addon command bridge. The addon UI only works if the corresponding `mod-llm-chatter` C++ and Python components are installed, configured, and running on the server.
+It depends on the server-side [`mod-llm-chatter`](https://github.com/Hokken/mod-llm-chatter) module and its addon command bridge. The addon UI only works if the corresponding `mod-llm-chatter` C++ and Python components are installed, configured, and running on the server.
 
 ## Requirements
 
