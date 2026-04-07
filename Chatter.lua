@@ -44,15 +44,29 @@ function Chatter:Decode(value)
     end))
 end
 
-function Chatter:SetStatus(text, r, g, b)
-    if not self.frame or not self.frame.status then
-        return
+function Chatter:GetActivePanel()
+    if self.traitsPanel and self.traitsPanel:IsShown() then
+        return self.traitsPanel
     end
+    return self.frame
+end
 
-    self.frame.status:SetText(text or "")
-    self.frame.status:SetTextColor(
-        r or 1, g or 0.82, b or 0
-    )
+function Chatter:SetStatus(text, r, g, b)
+    local panels = {}
+    if self.frame then
+        table.insert(panels, self.frame)
+    end
+    if self.traitsPanel then
+        table.insert(panels, self.traitsPanel)
+    end
+    for _, p in ipairs(panels) do
+        if p.status then
+            p.status:SetText(text or "")
+            p.status:SetTextColor(
+                r or 1, g or 0.82, b or 0
+            )
+        end
+    end
 end
 
 function Chatter:SendCommand(command)
@@ -174,8 +188,7 @@ local function createEditBox(parent, x, y, width, height)
     return box
 end
 
-function Chatter:UpdateDropdown()
-    local dropdown = self.frame and self.frame.dropdown
+function Chatter:InitDropdown(dropdown)
     if not dropdown then
         return
     end
@@ -220,21 +233,42 @@ function Chatter:UpdateDropdown()
     UIDropDownMenu_SetText(dropdown, "Select a bot")
 end
 
-function Chatter:ApplyProfile(profile)
-    if not self.frame then
+function Chatter:UpdateDropdown()
+    if self.frame then
+        self:InitDropdown(self.frame.dropdown)
+    end
+    if self.traitsPanel then
+        self:InitDropdown(self.traitsPanel.dropdown)
+    end
+end
+
+function Chatter:ApplyProfileToPanel(p, profile)
+    if not p then
         return
     end
+    if p.trait1 then
+        p.trait1:SetText(profile.trait1 or "")
+    end
+    if p.trait2 then
+        p.trait2:SetText(profile.trait2 or "")
+    end
+    if p.trait3 then
+        p.trait3:SetText(profile.trait3 or "")
+    end
+    if p.tone then
+        p.tone:SetText(profile.tone or "")
+    end
+end
 
+function Chatter:ApplyProfile(profile)
     local awaitingTone = (
         self.pendingToneGuid == profile.guid
     )
 
     self.selectedGuid = profile.guid
-    self.frame.nameValue:SetText(profile.name or "")
-    self.frame.trait1:SetText(profile.trait1 or "")
-    self.frame.trait2:SetText(profile.trait2 or "")
-    self.frame.trait3:SetText(profile.trait3 or "")
-    self.frame.tone:SetText(profile.tone or "")
+
+    self:ApplyProfileToPanel(self.frame, profile)
+    self:ApplyProfileToPanel(self.traitsPanel, profile)
 
     ChatterDB = ChatterDB or {}
     ChatterDB.selectedGuid = profile.guid
@@ -288,14 +322,20 @@ function Chatter:SaveProfile()
         return
     end
 
-    local trait1 = sanitizeInput(self.frame.trait1:GetText())
-    local trait2 = sanitizeInput(self.frame.trait2:GetText())
-    local trait3 = sanitizeInput(self.frame.trait3:GetText())
+    local p = self:GetActivePanel()
+    if not p then
+        self:SetStatus("No panel open.", 1, 0.2, 0.2)
+        return
+    end
 
-    self.frame.trait1:SetText(trait1)
-    self.frame.trait2:SetText(trait2)
-    self.frame.trait3:SetText(trait3)
-    self.frame.tone:SetText("")
+    local trait1 = sanitizeInput(p.trait1:GetText())
+    local trait2 = sanitizeInput(p.trait2:GetText())
+    local trait3 = sanitizeInput(p.trait3:GetText())
+
+    p.trait1:SetText(trait1)
+    p.trait2:SetText(trait2)
+    p.trait3:SetText(trait3)
+    p.tone:SetText("")
 
     if trait1 == "" or trait2 == "" or trait3 == "" then
         self:SetStatus("All three traits are required.", 1, 0.2, 0.2)
@@ -328,7 +368,7 @@ function Chatter:BuildFrame()
 
     local frame = CreateFrame("Frame", "ChatterMainFrame", UIParent)
     frame:SetWidth(430)
-    frame:SetHeight(380)
+    frame:SetHeight(400)
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
     frame:EnableMouse(true)
@@ -359,66 +399,83 @@ function Chatter:BuildFrame()
     local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -5, -5)
 
-    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
+    local title = frame:CreateFontString(
+        nil, "OVERLAY", "GameFontNormalLarge"
+    )
     title:SetPoint("TOPLEFT", frame, "TOPLEFT", 16, -14)
-    title:SetText("Chatter")
+    title:SetText("Bot Traits")
 
-    local subtitle = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    local subtitle = frame:CreateFontString(
+        nil, "OVERLAY", "GameFontHighlightSmall"
+    )
     subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -6)
-    subtitle:SetText("Edit persistent bot traits and view generated tone")
+    subtitle:SetText(
+        "Edit persistent bot traits and view"
+        .. " generated tone"
+    )
 
-    createLabel(frame, "Known bots", 18, -52)
+    createLabel(frame, "Known bots", 18, -70)
 
-    local dropdown = CreateFrame("Frame", "ChatterBotDropdown", frame, "UIDropDownMenuTemplate")
-    dropdown:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, -68)
+    local dropdown = CreateFrame(
+        "Frame", "ChatterBotDropdown",
+        frame, "UIDropDownMenuTemplate"
+    )
+    dropdown:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, -86)
     frame.dropdown = dropdown
 
-    local refresh = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    local refresh = CreateFrame(
+        "Button", nil, frame, "UIPanelButtonTemplate"
+    )
     refresh:SetWidth(80)
     refresh:SetHeight(24)
-    refresh:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -18, -64)
+    refresh:SetPoint("LEFT", dropdown, "RIGHT", -10, 2)
     refresh:SetText("Refresh")
     refresh:SetScript("OnClick", function()
         Chatter:RequestRoster()
     end)
 
-    createLabel(frame, "Bot name", 18, -108)
-    local nameValue = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    nameValue:SetPoint("TOPLEFT", frame, "TOPLEFT", 18, -124)
-    nameValue:SetWidth(385)
-    nameValue:SetJustifyH("LEFT")
-    nameValue:SetText("No bot selected")
-    frame.nameValue = nameValue
-
-    createLabel(frame, "Trait 1", 18, -150)
-    frame.trait1 = createEditBox(frame, 18, -168, 385, 24)
+    createLabel(frame, "Trait 1", 18, -126)
+    frame.trait1 = createEditBox(frame, 18, -144, 385, 24)
     frame.trait1:SetMaxLetters(64)
 
-    createLabel(frame, "Trait 2", 18, -198)
-    frame.trait2 = createEditBox(frame, 18, -216, 385, 24)
+    createLabel(frame, "Trait 2", 18, -174)
+    frame.trait2 = createEditBox(frame, 18, -192, 385, 24)
     frame.trait2:SetMaxLetters(64)
 
-    createLabel(frame, "Trait 3", 18, -246)
-    frame.trait3 = createEditBox(frame, 18, -264, 385, 24)
+    createLabel(frame, "Trait 3", 18, -222)
+    frame.trait3 = createEditBox(frame, 18, -240, 385, 24)
     frame.trait3:SetMaxLetters(64)
 
-    createLabel(frame, "Tone (generated)", 18, -294)
-    frame.tone = createEditBox(frame, 18, -312, 385, 24)
+    createLabel(frame, "Tone (generated)", 18, -280)
+    frame.tone = createEditBox(frame, 18, -298, 385, 24)
     frame.tone:SetMaxLetters(120)
     frame.tone:SetScript("OnEditFocusGained", function(self)
         self:ClearFocus()
     end)
 
-    local closeButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    local status = frame:CreateFontString(
+        nil, "OVERLAY", "GameFontNormalSmall"
+    )
+    status:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 18, 20)
+    status:SetWidth(200)
+    status:SetJustifyH("LEFT")
+    status:SetText("")
+    frame.status = status
+
+    local closeButton = CreateFrame(
+        "Button", nil, frame, "UIPanelButtonTemplate"
+    )
     closeButton:SetWidth(90)
     closeButton:SetHeight(26)
-    closeButton:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -18, 16)
+    closeButton:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -18, 14)
     closeButton:SetText("Close")
     closeButton:SetScript("OnClick", function()
         frame:Hide()
     end)
 
-    local save = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    local save = CreateFrame(
+        "Button", nil, frame, "UIPanelButtonTemplate"
+    )
     save:SetWidth(120)
     save:SetHeight(26)
     save:SetPoint("RIGHT", closeButton, "LEFT", -10, 0)
@@ -427,85 +484,12 @@ function Chatter:BuildFrame()
         Chatter:SaveProfile()
     end)
 
-    local status = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    status:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 18, 22)
-    status:SetWidth(270)
-    status:SetJustifyH("LEFT")
-    status:SetText("")
-    frame.status = status
-
     self.frame = frame
     self:RestoreWindowPosition()
     self:UpdateDropdown()
 end
 
-function Chatter:BuildOptionsPanel()
-    if self.optionsPanel then
-        return
-    end
-
-    local panel = CreateFrame(
-        "Frame",
-        "ChatterOptionsPanel",
-        UIParent
-    )
-    panel.name = "Chatter"
-    panel:Hide()
-
-    local title = panel:CreateFontString(
-        nil,
-        "ARTWORK",
-        "GameFontNormalLarge"
-    )
-    title:SetPoint("TOPLEFT", 16, -16)
-    title:SetText("Chatter")
-
-    local subtitle = panel:CreateFontString(
-        nil,
-        "ARTWORK",
-        "GameFontHighlightSmall"
-    )
-    subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
-    subtitle:SetWidth(560)
-    subtitle:SetJustifyH("LEFT")
-    subtitle:SetText(
-        "Edit persistent bot traits and view generated tone for bots "
-        .. "you have grouped with before."
-    )
-
-    local slashHint = panel:CreateFontString(
-        nil,
-        "ARTWORK",
-        "GameFontNormal"
-    )
-    slashHint:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -18)
-    slashHint:SetText("Slash commands: /chatter or /llmc")
-
-    local openButton = CreateFrame(
-        "Button",
-        nil,
-        panel,
-        "UIPanelButtonTemplate"
-    )
-    openButton:SetWidth(160)
-    openButton:SetHeight(24)
-    openButton:SetPoint("TOPLEFT", slashHint, "BOTTOMLEFT", 0, -16)
-    openButton:SetText("Open Chatter")
-    openButton:SetScript("OnClick", function()
-        Chatter:BuildFrame()
-        if InterfaceOptionsFrame and InterfaceOptionsFrame:IsShown() then
-            HideUIPanel(InterfaceOptionsFrame)
-        end
-        if GameMenuFrame and GameMenuFrame:IsShown() then
-            HideUIPanel(GameMenuFrame)
-        end
-        if not Chatter.frame:IsShown() then
-            Chatter.frame:Show()
-        end
-        Chatter.frame:Raise()
-        Chatter:RequestRoster()
-    end)
-
+local function addCategory(panel)
     if type(InterfaceOptions_AddCategory) == "function" then
         InterfaceOptions_AddCategory(panel)
     elseif type(InterfaceOptionsFrame_AddCategory) == "function" then
@@ -513,8 +497,138 @@ function Chatter:BuildOptionsPanel()
     elseif type(INTERFACEOPTIONS_ADDONCATEGORIES) == "table" then
         table.insert(INTERFACEOPTIONS_ADDONCATEGORIES, panel)
     end
+end
 
-    self.optionsPanel = panel
+function Chatter:BuildOptionsPanel()
+    if self.optionsPanel then
+        return
+    end
+
+    -- Parent panel: overview and slash commands
+    local parent = CreateFrame(
+        "Frame",
+        "ChatterOptionsPanel",
+        UIParent
+    )
+    parent.name = "Chatter"
+    parent:Hide()
+
+    local title = parent:CreateFontString(
+        nil, "ARTWORK", "GameFontNormalLarge"
+    )
+    title:SetPoint("TOPLEFT", 16, -16)
+    title:SetText("Chatter")
+
+    local desc = parent:CreateFontString(
+        nil, "ARTWORK", "GameFontHighlight"
+    )
+    desc:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
+    desc:SetText(
+        "Ambient bot conversation module for"
+        .. " mod-llm-chatter"
+    )
+
+    local slashHint = parent:CreateFontString(
+        nil, "ARTWORK", "GameFontNormal"
+    )
+    slashHint:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -16)
+    slashHint:SetText("Slash commands: /chatter or /llmc")
+
+    addCategory(parent)
+    self.optionsPanel = parent
+
+    -- Child panel: Bot Traits editor
+    local child = CreateFrame(
+        "Frame",
+        "ChatterTraitsPanel",
+        UIParent
+    )
+    child.name = "Bot Traits"
+    child.parent = "Chatter"
+    child:Hide()
+
+    local cTitle = child:CreateFontString(
+        nil, "ARTWORK", "GameFontNormalLarge"
+    )
+    cTitle:SetPoint("TOPLEFT", 16, -16)
+    cTitle:SetText("Bot Traits")
+
+    local cDesc = child:CreateFontString(
+        nil, "ARTWORK", "GameFontHighlightSmall"
+    )
+    cDesc:SetPoint("TOPLEFT", cTitle, "BOTTOMLEFT", 0, -6)
+    cDesc:SetText(
+        "Edit persistent bot traits and view"
+        .. " generated tone"
+    )
+
+    createLabel(child, "Known bots", 18, -70)
+
+    local dropdown = CreateFrame(
+        "Frame",
+        "ChatterOptBotDropdown",
+        child,
+        "UIDropDownMenuTemplate"
+    )
+    dropdown:SetPoint("TOPLEFT", child, "TOPLEFT", 4, -86)
+    child.dropdown = dropdown
+
+    local refresh = CreateFrame(
+        "Button", nil, child, "UIPanelButtonTemplate"
+    )
+    refresh:SetWidth(80)
+    refresh:SetHeight(24)
+    refresh:SetPoint("LEFT", dropdown, "RIGHT", -10, 2)
+    refresh:SetText("Refresh")
+    refresh:SetScript("OnClick", function()
+        Chatter:RequestRoster()
+    end)
+
+    createLabel(child, "Trait 1", 18, -126)
+    child.trait1 = createEditBox(child, 18, -144, 385, 24)
+    child.trait1:SetMaxLetters(64)
+
+    createLabel(child, "Trait 2", 18, -174)
+    child.trait2 = createEditBox(child, 18, -192, 385, 24)
+    child.trait2:SetMaxLetters(64)
+
+    createLabel(child, "Trait 3", 18, -222)
+    child.trait3 = createEditBox(child, 18, -240, 385, 24)
+    child.trait3:SetMaxLetters(64)
+
+    createLabel(child, "Tone (generated)", 18, -280)
+    child.tone = createEditBox(child, 18, -298, 385, 24)
+    child.tone:SetMaxLetters(120)
+    child.tone:SetScript("OnEditFocusGained", function(self)
+        self:ClearFocus()
+    end)
+
+    local status = child:CreateFontString(
+        nil, "OVERLAY", "GameFontNormalSmall"
+    )
+    status:SetPoint("TOPLEFT", child, "TOPLEFT", 18, -350)
+    status:SetWidth(250)
+    status:SetJustifyH("LEFT")
+    status:SetText("")
+    child.status = status
+
+    local save = CreateFrame(
+        "Button", nil, child, "UIPanelButtonTemplate"
+    )
+    save:SetWidth(120)
+    save:SetHeight(26)
+    save:SetPoint("TOPRIGHT", child, "TOPRIGHT", -18, -344)
+    save:SetText("Save Changes")
+    save:SetScript("OnClick", function()
+        Chatter:SaveProfile()
+    end)
+
+    child:SetScript("OnShow", function()
+        Chatter:RequestRoster()
+    end)
+
+    addCategory(child)
+    self.traitsPanel = child
 end
 
 function Chatter:Toggle()
@@ -555,11 +669,12 @@ function Chatter:FinishRoster()
 
     if #self.roster == 0 then
         self.selectedGuid = nil
-        self.frame.nameValue:SetText("No known bots found")
-        self.frame.trait1:SetText("")
-        self.frame.trait2:SetText("")
-        self.frame.trait3:SetText("")
-        self.frame.tone:SetText("")
+        local empty = {
+            trait1 = "", trait2 = "", trait3 = "",
+            tone = ""
+        }
+        self:ApplyProfileToPanel(self.frame, empty)
+        self:ApplyProfileToPanel(self.traitsPanel, empty)
         self:SetStatus("No known bots yet.", 1, 0.82, 0)
         return
     end
@@ -636,7 +751,12 @@ function Chatter:HandleSystemMessage(message)
         local guid, name = string.match(rest, "^(%d+)%s+(%S+)$")
         if guid and name then
             self.selectedGuid = tonumber(guid)
-            self.frame.tone:SetText("")
+            if self.frame and self.frame.tone then
+                self.frame.tone:SetText("")
+            end
+            if self.traitsPanel and self.traitsPanel.tone then
+                self.traitsPanel.tone:SetText("")
+            end
             self:StartTonePoll(guid)
             self:SetStatus(
                 "Saved traits for "
