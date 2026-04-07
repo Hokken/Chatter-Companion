@@ -4,7 +4,7 @@
 
 # Chatter Companion 
 
-Chatter is a World of Warcraft 3.3.5 addon that acts as a companion UI for the `mod-llm-chatter` AzerothCore module.
+Chatter is a World of Warcraft 3.3.5 addon that acts as a companion UI for the [`mod-llm-chatter`](https://github.com/Hokken/mod-llm-chatter) AzerothCore module.
 
 It lets the player manage persistent personality traits for bots they have grouped with before. The addon shows known bots, allows editing the three stored traits for a selected bot, and displays the tone that `mod-llm-chatter` generates from those traits.
 
