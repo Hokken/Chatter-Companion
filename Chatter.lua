@@ -8,6 +8,9 @@ Chatter.pendingProfileGuid = nil
 Chatter.pendingToneGuid = nil
 Chatter.tonePollElapsed = 0
 Chatter.tonePollRemaining = 0
+Chatter.pendingBackstoryGuid = nil
+Chatter.backstoryPollElapsed = 0
+Chatter.backstoryPollRemaining = 0
 
 local function trim(value)
     if not value then
@@ -116,6 +119,51 @@ function Chatter:HandleTonePoll(elapsed)
     end
 end
 
+function Chatter:StopBackstoryPoll()
+    self.pendingBackstoryGuid = nil
+    self.backstoryPollElapsed = 0
+    self.backstoryPollRemaining = 0
+end
+
+function Chatter:StartBackstoryPoll(guid)
+    guid = tonumber(guid)
+    if not guid then
+        return
+    end
+
+    self.pendingBackstoryGuid = guid
+    self.backstoryPollElapsed = 0
+    self.backstoryPollRemaining = 30
+end
+
+function Chatter:HandleBackstoryPoll(elapsed)
+    if not self.pendingBackstoryGuid then
+        return
+    end
+
+    self.backstoryPollElapsed =
+        self.backstoryPollElapsed + elapsed
+    self.backstoryPollRemaining =
+        self.backstoryPollRemaining - elapsed
+
+    if self.backstoryPollRemaining <= 0 then
+        self:SetStatus(
+            "Backstory generation still pending."
+            .. " Use Refresh.",
+            1, 0.82, 0
+        )
+        self:StopBackstoryPoll()
+        return
+    end
+
+    if self.backstoryPollElapsed >= 2.0 then
+        self.backstoryPollElapsed = 0
+        self:SendCommand(
+            "get " .. self.pendingBackstoryGuid
+        )
+    end
+end
+
 function Chatter:SaveWindowPosition()
     if not self.frame then
         return
@@ -191,6 +239,127 @@ local function createEditBox(parent, x, y, width, height)
     return box
 end
 
+local function createMultiLineEditBox(
+    parent, x, y, width, height
+)
+    local holder = CreateFrame("Frame", nil, parent)
+    holder:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
+    holder:SetWidth(width)
+    holder:SetHeight(height)
+    holder:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true,
+        tileSize = 8,
+        edgeSize = 12,
+        insets = {
+            left = 3,
+            right = 3,
+            top = 3,
+            bottom = 3
+        }
+    })
+    holder:SetBackdropColor(0, 0, 0, 0.85)
+    holder:SetBackdropBorderColor(0.55, 0.55, 0.55, 1)
+
+    -- Scrollbar (thin slider on the right)
+    local scrollbar = CreateFrame(
+        "Slider", nil, holder
+    )
+    scrollbar:SetWidth(12)
+    scrollbar:SetPoint(
+        "TOPRIGHT", holder, "TOPRIGHT", -4, -6
+    )
+    scrollbar:SetPoint(
+        "BOTTOMRIGHT", holder, "BOTTOMRIGHT", -4, 6
+    )
+    scrollbar:SetOrientation("VERTICAL")
+    scrollbar:SetMinMaxValues(0, 1)
+    scrollbar:SetValue(0)
+    scrollbar:SetValueStep(1)
+    scrollbar:SetThumbTexture(
+        "Interface\\Buttons\\UI-ScrollBar-Knob"
+    )
+    scrollbar:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+    })
+    scrollbar:SetBackdropColor(0.1, 0.1, 0.1, 0.5)
+
+    local scroll = CreateFrame(
+        "ScrollFrame", nil, holder
+    )
+    scroll:SetPoint("TOPLEFT", holder, "TOPLEFT", 6, -6)
+    scroll:SetPoint(
+        "BOTTOMRIGHT", scrollbar, "BOTTOMLEFT", -2, 0
+    )
+
+    local box = CreateFrame("EditBox", nil, scroll)
+    box:SetAutoFocus(false)
+    box:SetMultiLine(true)
+    box:SetFontObject(GameFontHighlight)
+    -- Full width minus scrollbar and padding
+    box:SetWidth(width - 28)
+    box:SetTextInsets(2, 2, 2, 2)
+    box:SetJustifyH("LEFT")
+    scroll:SetScrollChild(box)
+
+    -- Update width dynamically when shown
+    scroll:SetScript("OnSizeChanged", function(self)
+        box:SetWidth(self:GetWidth())
+    end)
+
+    -- Sync helper: update scrollbar range and
+    -- position from current scroll state
+    local function updateScrollbar()
+        local maxScroll = math.max(
+            0,
+            box:GetHeight() - scroll:GetHeight()
+        )
+        scrollbar:SetMinMaxValues(0, maxScroll)
+        if maxScroll > 0 then
+            scrollbar:Show()
+        else
+            scrollbar:Hide()
+        end
+    end
+
+    -- Mouse-wheel scrolling on the holder frame
+    holder:EnableMouseWheel(true)
+    holder:SetScript("OnMouseWheel", function(_, delta)
+        local cur = scroll:GetVerticalScroll()
+        local maxScroll = math.max(
+            0,
+            box:GetHeight() - scroll:GetHeight()
+        )
+        local step = 20
+        local newVal = cur - (delta * step)
+        newVal = math.max(0, math.min(newVal, maxScroll))
+        scroll:SetVerticalScroll(newVal)
+        scrollbar:SetValue(newVal)
+    end)
+
+    -- Scrollbar drag updates scroll position
+    scrollbar:SetScript("OnValueChanged", function(
+        self, value
+    )
+        scroll:SetVerticalScroll(value)
+    end)
+
+    -- Update scrollbar when text changes
+    box:SetScript("OnTextChanged", function()
+        updateScrollbar()
+    end)
+
+    -- Initial scrollbar state (hidden until needed)
+    scrollbar:Hide()
+
+    holder.editBox = box
+    holder.scroll = scroll
+    holder.scrollbar = scrollbar
+    holder.updateScrollbar = updateScrollbar
+    return box
+end
+
 function Chatter:InitDropdown(dropdown)
     if not dropdown then
         return
@@ -222,7 +391,7 @@ function Chatter:InitDropdown(dropdown)
         end
     end)
 
-    UIDropDownMenu_SetWidth(dropdown, 215)
+    UIDropDownMenu_SetWidth(dropdown, 260)
 
     if self.selectedGuid then
         for _, bot in ipairs(self.roster) do
@@ -267,7 +436,6 @@ function Chatter:ApplyProfile(profile)
     local awaitingTone = (
         self.pendingToneGuid == profile.guid
     )
-
     self.selectedGuid = profile.guid
 
     self:ApplyProfileToPanel(self.frame, profile)
@@ -286,7 +454,9 @@ function Chatter:ApplyProfile(profile)
                 0.3, 1, 0.3
             )
         else
-            self:SetStatus("Generating tone...", 1, 0.82, 0)
+            self:SetStatus(
+                "Generating tone...", 1, 0.82, 0
+            )
         end
     else
         self:SetStatus(
@@ -304,6 +474,10 @@ function Chatter:SelectBot(guid)
 
     if self.pendingToneGuid and self.pendingToneGuid ~= guid then
         self:StopTonePoll()
+    end
+    if self.pendingBackstoryGuid
+        and self.pendingBackstoryGuid ~= guid then
+        self:StopBackstoryPoll()
     end
 
     self.selectedGuid = guid
@@ -352,6 +526,7 @@ function Chatter:SaveProfile()
     end
 
     self:StopTonePoll()
+    self:StopBackstoryPoll()
     self:SetStatus("Saving traits and generating tone...", 1, 0.82, 0)
     self:SendCommand(
         string.format(
@@ -364,14 +539,36 @@ function Chatter:SaveProfile()
     )
 end
 
+function Chatter:RegenBackstory()
+    if not self.selectedGuid then
+        self:SetStatus("Select a bot first.", 1, 0.2, 0.2)
+        return
+    end
+
+    self:StopBackstoryPoll()
+    self:SetStatus(
+        "Regenerating backstory...", 1, 0.82, 0
+    )
+
+    local p = self:GetActivePanel()
+    if p and p.backstory then
+        p.backstory:SetText("")
+    end
+
+    self:SendCommand(
+        "regenbackstory " .. self.selectedGuid
+    )
+    self:StartBackstoryPoll(self.selectedGuid)
+end
+
 function Chatter:BuildFrame()
     if self.frame then
         return
     end
 
     local frame = CreateFrame("Frame", "ChatterMainFrame", UIParent)
-    frame:SetWidth(430)
-    frame:SetHeight(400)
+    frame:SetWidth(480)
+    frame:SetHeight(580)
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
     frame:EnableMouse(true)
@@ -438,22 +635,43 @@ function Chatter:BuildFrame()
     end)
 
     createLabel(frame, "Trait 1", 18, -126)
-    frame.trait1 = createEditBox(frame, 18, -144, 385, 24)
+    frame.trait1 = createEditBox(frame, 18, -144, 435, 24)
     frame.trait1:SetMaxLetters(64)
 
     createLabel(frame, "Trait 2", 18, -174)
-    frame.trait2 = createEditBox(frame, 18, -192, 385, 24)
+    frame.trait2 = createEditBox(frame, 18, -192, 435, 24)
     frame.trait2:SetMaxLetters(64)
 
     createLabel(frame, "Trait 3", 18, -222)
-    frame.trait3 = createEditBox(frame, 18, -240, 385, 24)
+    frame.trait3 = createEditBox(frame, 18, -240, 435, 24)
     frame.trait3:SetMaxLetters(64)
 
     createLabel(frame, "Tone (generated)", 18, -280)
-    frame.tone = createEditBox(frame, 18, -298, 385, 24)
+    frame.tone = createEditBox(frame, 18, -298, 435, 24)
     frame.tone:SetMaxLetters(120)
     frame.tone:SetScript("OnEditFocusGained", function(self)
         self:ClearFocus()
+    end)
+
+    createLabel(frame, "Background Story", 18, -330)
+    frame.backstory = createMultiLineEditBox(
+        frame, 18, -348, 435, 90
+    )
+    frame.backstory:SetMaxLetters(1000)
+    frame.backstory:EnableMouse(false)
+    frame.backstory:SetTextColor(0.7, 0.7, 0.7)
+
+    local regenStory = CreateFrame(
+        "Button", nil, frame, "UIPanelButtonTemplate"
+    )
+    regenStory:SetWidth(130)
+    regenStory:SetHeight(22)
+    regenStory:SetPoint(
+        "TOPLEFT", frame, "TOPLEFT", 18, -446
+    )
+    regenStory:SetText("Regenerate Story")
+    regenStory:SetScript("OnClick", function()
+        Chatter:RegenBackstory()
     end)
 
     local status = frame:CreateFontString(
@@ -482,7 +700,7 @@ function Chatter:BuildFrame()
     save:SetWidth(120)
     save:SetHeight(26)
     save:SetPoint("RIGHT", closeButton, "LEFT", -10, 0)
-    save:SetText("Save Changes")
+    save:SetText("Save Traits")
     save:SetScript("OnClick", function()
         Chatter:SaveProfile()
     end)
@@ -588,28 +806,49 @@ function Chatter:BuildOptionsPanel()
     end)
 
     createLabel(child, "Trait 1", 18, -126)
-    child.trait1 = createEditBox(child, 18, -144, 385, 24)
+    child.trait1 = createEditBox(child, 18, -144, 435, 24)
     child.trait1:SetMaxLetters(64)
 
     createLabel(child, "Trait 2", 18, -174)
-    child.trait2 = createEditBox(child, 18, -192, 385, 24)
+    child.trait2 = createEditBox(child, 18, -192, 435, 24)
     child.trait2:SetMaxLetters(64)
 
     createLabel(child, "Trait 3", 18, -222)
-    child.trait3 = createEditBox(child, 18, -240, 385, 24)
+    child.trait3 = createEditBox(child, 18, -240, 435, 24)
     child.trait3:SetMaxLetters(64)
 
     createLabel(child, "Tone (generated)", 18, -280)
-    child.tone = createEditBox(child, 18, -298, 385, 24)
+    child.tone = createEditBox(child, 18, -298, 435, 24)
     child.tone:SetMaxLetters(120)
     child.tone:SetScript("OnEditFocusGained", function(self)
         self:ClearFocus()
     end)
 
+    createLabel(child, "Background Story", 18, -330)
+    child.backstory = createMultiLineEditBox(
+        child, 18, -348, 435, 90
+    )
+    child.backstory:SetMaxLetters(1000)
+    child.backstory:EnableMouse(false)
+    child.backstory:SetTextColor(0.7, 0.7, 0.7)
+
+    local cRegenStory = CreateFrame(
+        "Button", nil, child, "UIPanelButtonTemplate"
+    )
+    cRegenStory:SetWidth(130)
+    cRegenStory:SetHeight(22)
+    cRegenStory:SetPoint(
+        "TOPLEFT", child, "TOPLEFT", 18, -446
+    )
+    cRegenStory:SetText("Regenerate Story")
+    cRegenStory:SetScript("OnClick", function()
+        Chatter:RegenBackstory()
+    end)
+
     local status = child:CreateFontString(
         nil, "OVERLAY", "GameFontNormalSmall"
     )
-    status:SetPoint("TOPLEFT", child, "TOPLEFT", 18, -350)
+    status:SetPoint("TOPLEFT", child, "TOPLEFT", 18, -476)
     status:SetWidth(250)
     status:SetJustifyH("LEFT")
     status:SetText("")
@@ -620,8 +859,8 @@ function Chatter:BuildOptionsPanel()
     )
     save:SetWidth(120)
     save:SetHeight(26)
-    save:SetPoint("TOPRIGHT", child, "TOPRIGHT", -18, -344)
-    save:SetText("Save Changes")
+    save:SetPoint("TOPRIGHT", child, "TOPRIGHT", -18, -470)
+    save:SetText("Save Traits")
     save:SetScript("OnClick", function()
         Chatter:SaveProfile()
     end)
@@ -674,7 +913,7 @@ function Chatter:FinishRoster()
         self.selectedGuid = nil
         local empty = {
             trait1 = "", trait2 = "", trait3 = "",
-            tone = ""
+            tone = "", backstory = "",
         }
         self:ApplyProfileToPanel(self.frame, empty)
         self:ApplyProfileToPanel(self.traitsPanel, empty)
@@ -703,8 +942,14 @@ function Chatter:FinishRoster()
 end
 
 function Chatter:HandleProfilePayload(rest)
+    -- Parse 6 fields: guid name t1 t2 t3 tone
+    -- Backstory arrives as a separate BACKSTORY message
     local guid, name, trait1, trait2, trait3, tone =
-        string.match(rest, "^(%d+)%s+(%S+)%s+(%S+)%s+(%S+)%s+(%S+)%s+(%S+)$")
+        string.match(
+            rest,
+            "^(%d+)%s+(%S+)%s+(%S+)%s+(%S+)"
+            .. "%s+(%S+)%s+(%S+)$"
+        )
     if not guid then
         return
     end
@@ -715,8 +960,47 @@ function Chatter:HandleProfilePayload(rest)
         trait1 = self:Decode(trait1),
         trait2 = self:Decode(trait2),
         trait3 = self:Decode(trait3),
-        tone = self:Decode(tone)
+        tone = self:Decode(tone),
     })
+end
+
+function Chatter:HandleBackstoryPayload(rest)
+    local guid, encoded = string.match(
+        rest, "^(%d+)%s+(.+)$"
+    )
+    if not guid then
+        return
+    end
+
+    local numGuid = tonumber(guid)
+    local text = self:Decode(encoded or "-")
+
+    -- Apply to whichever panels are open
+    if self.frame and self.frame.backstory
+        and self.selectedGuid == numGuid then
+        self.frame.backstory:SetText(text)
+    end
+    if self.traitsPanel
+        and self.traitsPanel.backstory
+        and self.selectedGuid == numGuid then
+        self.traitsPanel.backstory:SetText(text)
+    end
+
+    -- If we were polling for backstory, check
+    -- if it arrived
+    if self.pendingBackstoryGuid == numGuid then
+        if text and text ~= "" then
+            self:StopBackstoryPoll()
+            -- Only show backstory status if tone
+            -- poll is already done
+            if not self.pendingToneGuid then
+                self:SetStatus(
+                    "Backstory generated.",
+                    0.3, 1, 0.3
+                )
+            end
+        end
+    end
 end
 
 function Chatter:HandleSystemMessage(message)
@@ -750,6 +1034,11 @@ function Chatter:HandleSystemMessage(message)
         return
     end
 
+    if command == "BACKSTORY" then
+        self:HandleBackstoryPayload(rest)
+        return
+    end
+
     if command == "UPDATED" then
         local guid, name = string.match(rest, "^(%d+)%s+(%S+)$")
         if guid and name then
@@ -760,11 +1049,34 @@ function Chatter:HandleSystemMessage(message)
             if self.traitsPanel and self.traitsPanel.tone then
                 self.traitsPanel.tone:SetText("")
             end
+            if self.frame and self.frame.backstory then
+                self.frame.backstory:SetText("")
+            end
+            if self.traitsPanel
+                and self.traitsPanel.backstory then
+                self.traitsPanel.backstory:SetText("")
+            end
             self:StartTonePoll(guid)
+            self:StartBackstoryPoll(guid)
             self:SetStatus(
                 "Saved traits for "
                     .. self:Decode(name)
-                    .. ". Generating tone...",
+                    .. ". Generating tone"
+                    .. " and backstory...",
+                1, 0.82, 0
+            )
+        end
+        return
+    end
+
+    if command == "BACKSTORY_REGEN" then
+        local guid, name = string.match(
+            rest, "^(%d+)%s+(%S+)$"
+        )
+        if guid and name then
+            self:SetStatus(
+                "Regenerating backstory for "
+                    .. self:Decode(name) .. "...",
                 1, 0.82, 0
             )
         end
@@ -772,8 +1084,12 @@ function Chatter:HandleSystemMessage(message)
     end
 
     if command == "ERROR" then
-        local _, encoded = string.match(rest, "^(%S+)%s*(.-)$")
-        self:SetStatus(self:Decode(encoded), 1, 0.2, 0.2)
+        local _, encoded = string.match(
+            rest, "^(%S+)%s*(.-)$"
+        )
+        self:SetStatus(
+            self:Decode(encoded), 1, 0.2, 0.2
+        )
     end
 end
 
@@ -794,6 +1110,7 @@ end
 
 Chatter:SetScript("OnUpdate", function(self, elapsed)
     self:HandleTonePoll(elapsed)
+    self:HandleBackstoryPoll(elapsed)
 end)
 
 Chatter:SetScript("OnEvent", function(self, event)
