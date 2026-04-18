@@ -539,6 +539,55 @@ function Chatter:SaveProfile()
     )
 end
 
+function Chatter:ConfirmForget()
+    if not self.selectedGuid then
+        self:SetStatus(
+            "Select a bot first.", 1, 0.2, 0.2
+        )
+        return
+    end
+
+    local p = self:GetActivePanel()
+    local botName = self.selectedGuid
+    if p and p.trait1 then
+        local t = p.trait1:GetText()
+        if t and t ~= "" then
+            botName = self:Decode(
+                self:GetSelectedName() or botName
+            )
+        end
+    end
+    botName = self:GetSelectedName() or botName
+
+    StaticPopup_Show(
+        "CHATTER_CONFIRM_FORGET", botName
+    )
+end
+
+function Chatter:GetSelectedName()
+    if not self.selectedGuid then
+        return nil
+    end
+    local guid = tonumber(self.selectedGuid)
+    if not guid then return nil end
+    for _, entry in ipairs(self.roster or {}) do
+        if entry.guid == guid then
+            return self:Decode(entry.name)
+        end
+    end
+    return nil
+end
+
+function Chatter:ForgetBot()
+    if not self.selectedGuid then return end
+    self:SetStatus(
+        "Forgetting bot...", 1, 0.82, 0
+    )
+    self:SendCommand(
+        "forget " .. self.selectedGuid
+    )
+end
+
 function Chatter:RegenBackstory()
     if not self.selectedGuid then
         self:SetStatus("Select a bot first.", 1, 0.2, 0.2)
@@ -632,6 +681,17 @@ function Chatter:BuildFrame()
     refresh:SetText("Refresh")
     refresh:SetScript("OnClick", function()
         Chatter:RequestRoster()
+    end)
+
+    local forget = CreateFrame(
+        "Button", nil, frame, "UIPanelButtonTemplate"
+    )
+    forget:SetWidth(70)
+    forget:SetHeight(24)
+    forget:SetPoint("LEFT", refresh, "RIGHT", 4, 0)
+    forget:SetText("Forget")
+    forget:SetScript("OnClick", function()
+        Chatter:ConfirmForget()
     end)
 
     createLabel(frame, "Trait 1", 18, -126)
@@ -803,6 +863,17 @@ function Chatter:BuildOptionsPanel()
     refresh:SetText("Refresh")
     refresh:SetScript("OnClick", function()
         Chatter:RequestRoster()
+    end)
+
+    local cForget = CreateFrame(
+        "Button", nil, child, "UIPanelButtonTemplate"
+    )
+    cForget:SetWidth(70)
+    cForget:SetHeight(24)
+    cForget:SetPoint("LEFT", refresh, "RIGHT", 4, 0)
+    cForget:SetText("Forget")
+    cForget:SetScript("OnClick", function()
+        Chatter:ConfirmForget()
     end)
 
     createLabel(child, "Trait 1", 18, -126)
@@ -1083,6 +1154,29 @@ function Chatter:HandleSystemMessage(message)
         return
     end
 
+    if command == "FORGOTTEN" then
+        local guid, name = string.match(
+            rest, "^(%d+)%s+(%S+)$"
+        )
+        local displayName = guid and name
+            and self:Decode(name) or "Bot"
+        self:SetStatus(
+            displayName .. " forgotten.",
+            0.4, 1, 0.4
+        )
+        self.selectedGuid = nil
+        local p = self:GetActivePanel()
+        if p then
+            self:ApplyProfileToPanel(p, {
+                trait1 = "", trait2 = "",
+                trait3 = "", tone = "",
+                backstory = "",
+            })
+        end
+        self:RequestRoster()
+        return
+    end
+
     if command == "ERROR" then
         local _, encoded = string.match(
             rest, "^(%S+)%s*(.-)$"
@@ -1101,6 +1195,19 @@ local function chatterSystemFilter(_, _, message, ...)
     end
     return false
 end
+
+StaticPopupDialogs["CHATTER_CONFIRM_FORGET"] = {
+    text = "Forget %s? Their memories with you will be erased. Their personality is preserved.",
+    button1 = "Forget",
+    button2 = "Cancel",
+    OnAccept = function()
+        Chatter:ForgetBot()
+    end,
+    timeout = 0,
+    whileDead = false,
+    hideOnEscape = true,
+    preferredIndex = 3,
+}
 
 SLASH_CHATTER1 = "/chatter"
 SLASH_CHATTER2 = "/llmc"
