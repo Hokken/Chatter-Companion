@@ -653,9 +653,9 @@ function Chatter:BuildFrame()
         self:ClearFocus()
     end)
 
-    createLabel(frame, "Background Story", 18, -330)
+    createLabel(frame, "Background Story", 18, -360)
     frame.backstory = createMultiLineEditBox(
-        frame, 18, -348, 435, 90
+        frame, 18, -378, 435, 90
     )
     frame.backstory:SetMaxLetters(1000)
     frame.backstory:EnableMouse(false)
@@ -667,7 +667,7 @@ function Chatter:BuildFrame()
     regenStory:SetWidth(130)
     regenStory:SetHeight(22)
     regenStory:SetPoint(
-        "TOPLEFT", frame, "TOPLEFT", 18, -446
+        "TOPLEFT", frame, "TOPLEFT", 18, -476
     )
     regenStory:SetText("Regenerate Story")
     regenStory:SetScript("OnClick", function()
@@ -824,9 +824,9 @@ function Chatter:BuildOptionsPanel()
         self:ClearFocus()
     end)
 
-    createLabel(child, "Background Story", 18, -330)
+    createLabel(child, "Background Story", 18, -360)
     child.backstory = createMultiLineEditBox(
-        child, 18, -348, 435, 90
+        child, 18, -378, 435, 90
     )
     child.backstory:SetMaxLetters(1000)
     child.backstory:EnableMouse(false)
@@ -838,7 +838,7 @@ function Chatter:BuildOptionsPanel()
     cRegenStory:SetWidth(130)
     cRegenStory:SetHeight(22)
     cRegenStory:SetPoint(
-        "TOPLEFT", child, "TOPLEFT", 18, -446
+        "TOPLEFT", child, "TOPLEFT", 18, -476
     )
     cRegenStory:SetText("Regenerate Story")
     cRegenStory:SetScript("OnClick", function()
@@ -848,7 +848,7 @@ function Chatter:BuildOptionsPanel()
     local status = child:CreateFontString(
         nil, "OVERLAY", "GameFontNormalSmall"
     )
-    status:SetPoint("TOPLEFT", child, "TOPLEFT", 18, -476)
+    status:SetPoint("TOPLEFT", child, "TOPLEFT", 18, -506)
     status:SetWidth(250)
     status:SetJustifyH("LEFT")
     status:SetText("")
@@ -859,7 +859,7 @@ function Chatter:BuildOptionsPanel()
     )
     save:SetWidth(120)
     save:SetHeight(26)
-    save:SetPoint("TOPRIGHT", child, "TOPRIGHT", -18, -470)
+    save:SetPoint("TOPRIGHT", child, "TOPRIGHT", -18, -500)
     save:SetText("Save Traits")
     save:SetScript("OnClick", function()
         Chatter:SaveProfile()
