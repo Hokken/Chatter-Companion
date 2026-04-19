@@ -93,7 +93,17 @@ function Chatter:StartTonePoll(guid)
 
     self.pendingToneGuid = guid
     self.tonePollElapsed = 0
-    self.tonePollRemaining = 20
+    self.tonePollRemaining = 120
+
+    local function applyPlaceholder(panel)
+        if not panel then return end
+        if panel.tone then
+            panel.tone:SetTextColor(0.5, 0.5, 0.5)
+            panel.tone:SetText("Generating tone...")
+        end
+    end
+    applyPlaceholder(self.frame)
+    applyPlaceholder(self.traitsPanel)
 end
 
 function Chatter:HandleTonePoll(elapsed)
@@ -119,10 +129,67 @@ function Chatter:HandleTonePoll(elapsed)
     end
 end
 
+function Chatter:SetRegenStoryEnabled(enabled)
+    local function apply(p)
+        if not p or not p.regenStoryBtn then
+            return
+        end
+        if enabled then
+            p.regenStoryBtn:Enable()
+        else
+            p.regenStoryBtn:Disable()
+        end
+    end
+    apply(self.frame)
+    apply(self.traitsPanel)
+end
+
+function Chatter:SetSaveEnabled(enabled)
+    local function apply(p)
+        if not p or not p.saveBtn then return end
+        if enabled then
+            p.saveBtn:Enable()
+        else
+            p.saveBtn:Disable()
+        end
+    end
+    apply(self.frame)
+    apply(self.traitsPanel)
+end
+
+function Chatter:UpdateSaveButton()
+    local loaded = self.loadedTraits
+    if not loaded then
+        self:SetSaveEnabled(false)
+        return
+    end
+    local p = self.frame or self.traitsPanel
+    if not p then
+        self:SetSaveEnabled(false)
+        return
+    end
+    local t1 = sanitizeInput(
+        p.trait1 and p.trait1:GetText() or ""
+    )
+    local t2 = sanitizeInput(
+        p.trait2 and p.trait2:GetText() or ""
+    )
+    local t3 = sanitizeInput(
+        p.trait3 and p.trait3:GetText() or ""
+    )
+    local changed = (
+        t1 ~= (loaded.trait1 or "")
+        or t2 ~= (loaded.trait2 or "")
+        or t3 ~= (loaded.trait3 or "")
+    )
+    self:SetSaveEnabled(changed)
+end
+
 function Chatter:StopBackstoryPoll()
     self.pendingBackstoryGuid = nil
     self.backstoryPollElapsed = 0
     self.backstoryPollRemaining = 0
+    self:SetRegenStoryEnabled(true)
 end
 
 function Chatter:StartBackstoryPoll(guid)
@@ -133,7 +200,27 @@ function Chatter:StartBackstoryPoll(guid)
 
     self.pendingBackstoryGuid = guid
     self.backstoryPollElapsed = 0
-    self.backstoryPollRemaining = 30
+    self.backstoryPollRemaining = 120
+
+    self:SetRegenStoryEnabled(false)
+
+    -- Show placeholder in the backstory box
+    local placeholder = "Creating background story..."
+    if self.frame and self.frame.backstory then
+        self.frame.backstory:SetText(placeholder)
+        self.frame.backstory:SetTextColor(
+            0.5, 0.5, 0.5
+        )
+    end
+    if self.traitsPanel
+        and self.traitsPanel.backstory then
+        self.traitsPanel.backstory:SetText(
+            placeholder
+        )
+        self.traitsPanel.backstory:SetTextColor(
+            0.5, 0.5, 0.5
+        )
+    end
 end
 
 function Chatter:HandleBackstoryPoll(elapsed)
@@ -428,7 +515,30 @@ function Chatter:ApplyProfileToPanel(p, profile)
         p.trait3:SetText(profile.trait3 or "")
     end
     if p.tone then
-        p.tone:SetText(profile.tone or "")
+        local toneText = profile.tone or ""
+        -- Only overwrite if not currently showing
+        -- a live placeholder (poll in progress)
+        local polling = (
+            self.pendingToneGuid
+            and self.pendingToneGuid == profile.guid
+        )
+        if not polling or toneText ~= "" then
+            p.tone:SetText(toneText)
+            p.tone:SetTextColor(0.7, 0.7, 0.7)
+        end
+    end
+    if p.backstory then
+        local bsText = profile.backstory or ""
+        -- Only overwrite if not currently showing
+        -- a live placeholder (poll in progress)
+        local polling = (
+            self.pendingBackstoryGuid
+            and self.pendingBackstoryGuid == profile.guid
+        )
+        if not polling or bsText ~= "" then
+            p.backstory:SetText(bsText)
+            p.backstory:SetTextColor(0.7, 0.7, 0.7)
+        end
     end
 end
 
@@ -438,8 +548,18 @@ function Chatter:ApplyProfile(profile)
     )
     self.selectedGuid = profile.guid
 
+    -- Store loaded traits for change detection
+    self.loadedTraits = {
+        trait1 = profile.trait1 or "",
+        trait2 = profile.trait2 or "",
+        trait3 = profile.trait3 or "",
+    }
+
     self:ApplyProfileToPanel(self.frame, profile)
     self:ApplyProfileToPanel(self.traitsPanel, profile)
+
+    -- Traits just loaded — no unsaved changes yet
+    self:SetSaveEnabled(false)
 
     ChatterDB = ChatterDB or {}
     ChatterDB.selectedGuid = profile.guid
@@ -512,7 +632,6 @@ function Chatter:SaveProfile()
     p.trait1:SetText(trait1)
     p.trait2:SetText(trait2)
     p.trait3:SetText(trait3)
-    p.tone:SetText("")
 
     if trait1 == "" or trait2 == "" or trait3 == "" then
         self:SetStatus("All three traits are required.", 1, 0.2, 0.2)
@@ -525,18 +644,60 @@ function Chatter:SaveProfile()
         return
     end
 
+    -- Store pending traits for use after confirm
+    self.pendingTraits = {
+        trait1 = trait1,
+        trait2 = trait2,
+        trait3 = trait3,
+    }
+
+    local loaded = self.loadedTraits or {}
+    local changed = (
+        trait1 ~= (loaded.trait1 or "")
+        or trait2 ~= (loaded.trait2 or "")
+        or trait3 ~= (loaded.trait3 or "")
+    )
+
+    if changed then
+        StaticPopup_Show(
+            "CHATTER_CONFIRM_SAVE_TRAITS"
+        )
+    else
+        -- Nothing changed — no server round-trip
+        self:SetStatus(
+            "Traits unchanged.", 0.3, 1, 0.3
+        )
+    end
+end
+
+function Chatter:DoSaveProfile()
+    local t = self.pendingTraits
+    if not t or not self.selectedGuid then
+        return
+    end
+
+    local guid = self.selectedGuid
     self:StopTonePoll()
     self:StopBackstoryPoll()
-    self:SetStatus("Saving traits and generating tone...", 1, 0.82, 0)
     self:SendCommand(
         string.format(
             "set %d %s %s %s",
-            self.selectedGuid,
-            self:Encode(trait1),
-            self:Encode(trait2),
-            self:Encode(trait3)
+            guid,
+            self:Encode(t.trait1),
+            self:Encode(t.trait2),
+            self:Encode(t.trait3)
         )
     )
+    -- Start polls immediately so placeholders appear
+    -- without waiting for the server round-trip
+    self:StartTonePoll(guid)
+    self:StartBackstoryPoll(guid)
+    self:SetStatus(
+        "Saving traits and regenerating tone"
+            .. " and backstory...",
+        1, 0.82, 0
+    )
+    self.pendingTraits = nil
 end
 
 function Chatter:ConfirmForget()
@@ -547,17 +708,8 @@ function Chatter:ConfirmForget()
         return
     end
 
-    local p = self:GetActivePanel()
-    local botName = self.selectedGuid
-    if p and p.trait1 then
-        local t = p.trait1:GetText()
-        if t and t ~= "" then
-            botName = self:Decode(
-                self:GetSelectedName() or botName
-            )
-        end
-    end
-    botName = self:GetSelectedName() or botName
+    local botName = self:GetSelectedName()
+        or tostring(self.selectedGuid)
 
     StaticPopup_Show(
         "CHATTER_CONFIRM_FORGET", botName
@@ -594,20 +746,13 @@ function Chatter:RegenBackstory()
         return
     end
 
+    local guid = self.selectedGuid
     self:StopBackstoryPoll()
+    self:SendCommand("regenbackstory " .. guid)
+    self:StartBackstoryPoll(guid)
     self:SetStatus(
         "Regenerating backstory...", 1, 0.82, 0
     )
-
-    local p = self:GetActivePanel()
-    if p and p.backstory then
-        p.backstory:SetText("")
-    end
-
-    self:SendCommand(
-        "regenbackstory " .. self.selectedGuid
-    )
-    self:StartBackstoryPoll(self.selectedGuid)
 end
 
 function Chatter:BuildFrame()
@@ -617,7 +762,7 @@ function Chatter:BuildFrame()
 
     local frame = CreateFrame("Frame", "ChatterMainFrame", UIParent)
     frame:SetWidth(480)
-    frame:SetHeight(580)
+    frame:SetHeight(620)
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
     frame:EnableMouse(true)
@@ -697,25 +842,32 @@ function Chatter:BuildFrame()
     createLabel(frame, "Trait 1", 18, -126)
     frame.trait1 = createEditBox(frame, 18, -144, 435, 24)
     frame.trait1:SetMaxLetters(64)
+    frame.trait1:SetScript("OnTextChanged", function()
+        Chatter:UpdateSaveButton()
+    end)
 
     createLabel(frame, "Trait 2", 18, -174)
     frame.trait2 = createEditBox(frame, 18, -192, 435, 24)
     frame.trait2:SetMaxLetters(64)
+    frame.trait2:SetScript("OnTextChanged", function()
+        Chatter:UpdateSaveButton()
+    end)
 
     createLabel(frame, "Trait 3", 18, -222)
     frame.trait3 = createEditBox(frame, 18, -240, 435, 24)
     frame.trait3:SetMaxLetters(64)
+    frame.trait3:SetScript("OnTextChanged", function()
+        Chatter:UpdateSaveButton()
+    end)
 
     createLabel(frame, "Tone (generated)", 18, -280)
     frame.tone = createEditBox(frame, 18, -298, 435, 24)
     frame.tone:SetMaxLetters(120)
-    frame.tone:SetScript("OnEditFocusGained", function(self)
-        self:ClearFocus()
-    end)
+    frame.tone:EnableMouse(false)
 
     createLabel(frame, "Background Story", 18, -360)
     frame.backstory = createMultiLineEditBox(
-        frame, 18, -378, 435, 90
+        frame, 18, -378, 435, 130
     )
     frame.backstory:SetMaxLetters(1000)
     frame.backstory:EnableMouse(false)
@@ -727,12 +879,13 @@ function Chatter:BuildFrame()
     regenStory:SetWidth(130)
     regenStory:SetHeight(22)
     regenStory:SetPoint(
-        "TOPLEFT", frame, "TOPLEFT", 18, -476
+        "TOPLEFT", frame, "TOPLEFT", 18, -516
     )
     regenStory:SetText("Regenerate Story")
     regenStory:SetScript("OnClick", function()
         Chatter:RegenBackstory()
     end)
+    frame.regenStoryBtn = regenStory
 
     local status = frame:CreateFontString(
         nil, "OVERLAY", "GameFontNormalSmall"
@@ -764,6 +917,8 @@ function Chatter:BuildFrame()
     save:SetScript("OnClick", function()
         Chatter:SaveProfile()
     end)
+    save:Disable()
+    frame.saveBtn = save
 
     self.frame = frame
     self:RestoreWindowPosition()
@@ -879,25 +1034,32 @@ function Chatter:BuildOptionsPanel()
     createLabel(child, "Trait 1", 18, -126)
     child.trait1 = createEditBox(child, 18, -144, 435, 24)
     child.trait1:SetMaxLetters(64)
+    child.trait1:SetScript("OnTextChanged", function()
+        Chatter:UpdateSaveButton()
+    end)
 
     createLabel(child, "Trait 2", 18, -174)
     child.trait2 = createEditBox(child, 18, -192, 435, 24)
     child.trait2:SetMaxLetters(64)
+    child.trait2:SetScript("OnTextChanged", function()
+        Chatter:UpdateSaveButton()
+    end)
 
     createLabel(child, "Trait 3", 18, -222)
     child.trait3 = createEditBox(child, 18, -240, 435, 24)
     child.trait3:SetMaxLetters(64)
+    child.trait3:SetScript("OnTextChanged", function()
+        Chatter:UpdateSaveButton()
+    end)
 
     createLabel(child, "Tone (generated)", 18, -280)
     child.tone = createEditBox(child, 18, -298, 435, 24)
     child.tone:SetMaxLetters(120)
-    child.tone:SetScript("OnEditFocusGained", function(self)
-        self:ClearFocus()
-    end)
+    child.tone:EnableMouse(false)
 
     createLabel(child, "Background Story", 18, -360)
     child.backstory = createMultiLineEditBox(
-        child, 18, -378, 435, 90
+        child, 18, -378, 435, 130
     )
     child.backstory:SetMaxLetters(1000)
     child.backstory:EnableMouse(false)
@@ -909,17 +1071,18 @@ function Chatter:BuildOptionsPanel()
     cRegenStory:SetWidth(130)
     cRegenStory:SetHeight(22)
     cRegenStory:SetPoint(
-        "TOPLEFT", child, "TOPLEFT", 18, -476
+        "TOPLEFT", child, "TOPLEFT", 18, -516
     )
     cRegenStory:SetText("Regenerate Story")
     cRegenStory:SetScript("OnClick", function()
         Chatter:RegenBackstory()
     end)
+    child.regenStoryBtn = cRegenStory
 
     local status = child:CreateFontString(
         nil, "OVERLAY", "GameFontNormalSmall"
     )
-    status:SetPoint("TOPLEFT", child, "TOPLEFT", 18, -506)
+    status:SetPoint("TOPLEFT", child, "TOPLEFT", 18, -546)
     status:SetWidth(250)
     status:SetJustifyH("LEFT")
     status:SetText("")
@@ -930,11 +1093,13 @@ function Chatter:BuildOptionsPanel()
     )
     save:SetWidth(120)
     save:SetHeight(26)
-    save:SetPoint("TOPRIGHT", child, "TOPRIGHT", -18, -500)
+    save:SetPoint("TOPRIGHT", child, "TOPRIGHT", -18, -540)
     save:SetText("Save Traits")
     save:SetScript("OnClick", function()
         Chatter:SaveProfile()
     end)
+    save:Disable()
+    child.saveBtn = save
 
     child:SetScript("OnShow", function()
         Chatter:RequestRoster()
@@ -1046,15 +1211,24 @@ function Chatter:HandleBackstoryPayload(rest)
     local numGuid = tonumber(guid)
     local text = self:Decode(encoded or "-")
 
-    -- Apply to whichever panels are open
-    if self.frame and self.frame.backstory
+    -- Only apply non-empty backstory to boxes;
+    -- empty means still generating — preserve
+    -- the "Creating background story..." placeholder
+    if text and text ~= ""
         and self.selectedGuid == numGuid then
-        self.frame.backstory:SetText(text)
-    end
-    if self.traitsPanel
-        and self.traitsPanel.backstory
-        and self.selectedGuid == numGuid then
-        self.traitsPanel.backstory:SetText(text)
+        if self.frame and self.frame.backstory then
+            self.frame.backstory:SetText(text)
+            self.frame.backstory:SetTextColor(
+                0.7, 0.7, 0.7
+            )
+        end
+        if self.traitsPanel
+            and self.traitsPanel.backstory then
+            self.traitsPanel.backstory:SetText(text)
+            self.traitsPanel.backstory:SetTextColor(
+                0.7, 0.7, 0.7
+            )
+        end
     end
 
     -- If we were polling for backstory, check
@@ -1111,31 +1285,37 @@ function Chatter:HandleSystemMessage(message)
     end
 
     if command == "UPDATED" then
-        local guid, name = string.match(rest, "^(%d+)%s+(%S+)$")
+        local guid, name, flag = string.match(
+            rest, "^(%d+)%s+(%S+)%s+(%S+)"
+        )
         if guid and name then
             self.selectedGuid = tonumber(guid)
-            if self.frame and self.frame.tone then
-                self.frame.tone:SetText("")
+            local changed = (flag == "changed")
+            if changed then
+                -- Polls were started in DoSaveProfile;
+                -- restart here to reset the 120s clock
+                -- now that the server confirmed the save
+                self:StartTonePoll(guid)
+                self:StartBackstoryPoll(guid)
+                self:SetStatus(
+                    "Saved. Regenerating tone"
+                        .. " and backstory...",
+                    1, 0.82, 0
+                )
+            else
+                self:StopTonePoll()
+                self:StopBackstoryPoll()
+                self:SetStatus(
+                    "Traits saved for "
+                        .. self:Decode(name) .. ".",
+                    0.3, 1, 0.3
+                )
+                -- Reload profile to restore
+                -- tone/backstory after optimistic polls
+                self:SendCommand(
+                    "get " .. tonumber(guid)
+                )
             end
-            if self.traitsPanel and self.traitsPanel.tone then
-                self.traitsPanel.tone:SetText("")
-            end
-            if self.frame and self.frame.backstory then
-                self.frame.backstory:SetText("")
-            end
-            if self.traitsPanel
-                and self.traitsPanel.backstory then
-                self.traitsPanel.backstory:SetText("")
-            end
-            self:StartTonePoll(guid)
-            self:StartBackstoryPoll(guid)
-            self:SetStatus(
-                "Saved traits for "
-                    .. self:Decode(name)
-                    .. ". Generating tone"
-                    .. " and backstory...",
-                1, 0.82, 0
-            )
         end
         return
     end
@@ -1164,15 +1344,20 @@ function Chatter:HandleSystemMessage(message)
             displayName .. " forgotten.",
             0.4, 1, 0.4
         )
+        self:StopTonePoll()
+        self:StopBackstoryPoll()
         self.selectedGuid = nil
-        local p = self:GetActivePanel()
-        if p then
-            self:ApplyProfileToPanel(p, {
-                trait1 = "", trait2 = "",
-                trait3 = "", tone = "",
-                backstory = "",
-            })
-        end
+        self.loadedTraits = nil
+        self:SetSaveEnabled(false)
+        local empty = {
+            trait1 = "", trait2 = "",
+            trait3 = "", tone = "",
+            backstory = "",
+        }
+        self:ApplyProfileToPanel(self.frame, empty)
+        self:ApplyProfileToPanel(
+            self.traitsPanel, empty
+        )
         self:RequestRoster()
         return
     end
@@ -1195,6 +1380,19 @@ local function chatterSystemFilter(_, _, message, ...)
     end
     return false
 end
+
+StaticPopupDialogs["CHATTER_CONFIRM_SAVE_TRAITS"] = {
+    text = "These traits are different from the saved ones. Saving will regenerate this bot's tone and background story. Continue?",
+    button1 = "Save",
+    button2 = "Cancel",
+    OnAccept = function()
+        Chatter:DoSaveProfile()
+    end,
+    timeout = 0,
+    whileDead = false,
+    hideOnEscape = true,
+    preferredIndex = 3,
+}
 
 StaticPopupDialogs["CHATTER_CONFIRM_FORGET"] = {
     text = "Forget %s? Their memories with you will be erased. Their personality is preserved.",
