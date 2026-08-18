@@ -608,7 +608,16 @@ function Chatter:SelectBot(guid)
 end
 
 function Chatter:RequestRoster()
+    -- Opening the panel and pressing Refresh can otherwise create two
+    -- overlapping streams. The second ROSTER_END used to clear the first.
+    if self.pendingRoster then
+        self:SetStatus(
+            "Roster request already in progress.", 1, 0.82, 0
+        )
+        return
+    end
     self.pendingRoster = {}
+    self.pendingRosterGuids = {}
     self:SetStatus("Requesting roster...", 1, 0.82, 0)
     self:SendCommand("roster")
 end
@@ -1129,6 +1138,11 @@ function Chatter:HandleRosterEntry(guidToken, nameToken)
         return
     end
 
+    self.pendingRosterGuids = self.pendingRosterGuids or {}
+    if self.pendingRosterGuids[guid] then
+        return
+    end
+    self.pendingRosterGuids[guid] = true
     table.insert(self.pendingRoster, {
         guid = guid,
         name = name
@@ -1136,8 +1150,13 @@ function Chatter:HandleRosterEntry(guidToken, nameToken)
 end
 
 function Chatter:FinishRoster()
+    -- A duplicate ROSTER_END must not replace a completed roster with {}.
+    if not self.pendingRoster then
+        return
+    end
     self.roster = self.pendingRoster or {}
     self.pendingRoster = nil
+    self.pendingRosterGuids = nil
 
     table.sort(self.roster, function(a, b)
         return string.lower(a.name) < string.lower(b.name)
@@ -1258,6 +1277,7 @@ function Chatter:HandleSystemMessage(message)
 
     if command == "ROSTER_BEGIN" then
         self.pendingRoster = {}
+        self.pendingRosterGuids = {}
         return
     end
 
