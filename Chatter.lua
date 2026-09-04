@@ -448,33 +448,57 @@ local function createMultiLineEditBox(
 end
 
 function Chatter:InitDropdown(dropdown)
-    if not dropdown then
-        return
-    end
+    if not dropdown then return end
 
-    UIDropDownMenu_Initialize(dropdown, function(_, level)
-        if level ~= 1 then
-            return
-        end
-
-        if #self.roster == 0 then
-            local info = UIDropDownMenu_CreateInfo()
-            info.text = "No known bots"
-            info.isTitle = true
-            info.notCheckable = true
-            UIDropDownMenu_AddButton(info, level)
-            return
-        end
-
-        for _, bot in ipairs(self.roster) do
-            local info = UIDropDownMenu_CreateInfo()
-            info.text = bot.name
-            info.value = bot.guid
-            info.checked = (bot.guid == self.selectedGuid)
-            info.func = function()
-                Chatter:SelectBot(bot.guid)
+    UIDropDownMenu_Initialize(dropdown, function(_, level, menuList)
+        if level == 1 then
+            if #self.roster == 0 then
+                local info = UIDropDownMenu_CreateInfo()
+                info.text = "No known bots"
+                info.isTitle = true
+                info.notCheckable = true
+                UIDropDownMenu_AddButton(info, level)
+                return
             end
-            UIDropDownMenu_AddButton(info, level)
+
+            -- Group bots into sub-menu categories by starting letter
+            local groups = {}
+            for _, bot in ipairs(self.roster) do
+                local firstChar = string.upper(string.sub(bot.name, 1, 1))
+                -- Group into chunks (e.g., A-F, G-L, M-R, S-Z)
+                local category = "A-F"
+                if firstChar >= "G" and firstChar <= "L" then category = "G-L"
+                elseif firstChar >= "M" and firstChar <= "R" then category = "M-R"
+                elseif firstChar >= "S" then category = "S-Z" end
+
+                groups[category] = groups[category] or {}
+                table.insert(groups[category], bot)
+            end
+
+            -- Add category headers that open sub-menus
+            for _, catName in ipairs({"A-F", "G-L", "M-R", "S-Z"}) do
+                if groups[catName] then
+                    local info = UIDropDownMenu_CreateInfo()
+                    info.text = catName
+                    info.hasArrow = true
+                    info.menuList = groups[catName]
+                    info.notCheckable = true
+                    UIDropDownMenu_AddButton(info, level)
+                end
+            end
+
+        elseif level == 2 and menuList then
+            -- Populate the sub-menu items
+            for _, bot in ipairs(menuList) do
+                local info = UIDropDownMenu_CreateInfo()
+                info.text = bot.name
+                info.value = bot.guid
+                info.checked = (bot.guid == self.selectedGuid)
+                info.func = function()
+                    Chatter:SelectBot(bot.guid)
+                end
+                UIDropDownMenu_AddButton(info, level)
+            end
         end
     end)
 
