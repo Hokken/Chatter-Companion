@@ -11,12 +11,49 @@ Chatter.tonePollRemaining = 0
 Chatter.pendingBackstoryGuid = nil
 Chatter.backstoryPollElapsed = 0
 Chatter.backstoryPollRemaining = 0
+Chatter.sendQueue = {}
+Chatter.sendElapsed = 0
+Chatter.saveLocked = false
+Chatter.saveLockRemaining = 0
+Chatter.uploadGuid = nil
+-- nil, "sending" while commands are still leaving the queue,
+-- "awaiting" once the last one is out and only the server's
+-- answer is outstanding. Sending a commit and having it
+-- applied are separate things, and the difference decides
+-- when a timeout is meaningful.
+Chatter.uploadState = nil
+-- What the player typed for the bot being saved. Kept until
+-- the server confirms the save so a rejection or a timeout
+-- can hand the edit back instead of losing it.
+Chatter.unsavedTraits = nil
+
+-- The client cuts an outgoing chat line at 255 characters.
+local MAX_CHAT_LENGTH = 255
+-- Longest percent-encoded payload carried by one `put`.
+local CHUNK_BUDGET = 200
+-- One message per interval keeps the upload clear of chat
+-- flood protection.
+local SEND_INTERVAL = 0.3
+-- How long to wait for the server's answer once the whole
+-- upload has been sent. It deliberately does not cover the
+-- upload itself, which is paced at SEND_INTERVAL and takes as
+-- long as it takes: a clock started earlier would be racing
+-- the send queue rather than measuring the server.
+local SAVE_LOCK_TIMEOUT = 20
 
 local function trim(value)
     if not value then
         return ""
     end
     return (value:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- Counts UTF-8 characters, matching SetMaxLetters on the
+-- edit boxes and the VARCHAR(64) columns on the server.
+-- Continuation bytes are 0x80-0xBF and are not counted.
+local function utf8len(value)
+    local _, count = string.gsub(value or "", "[^\128-\191]", "")
+    return count
 end
 
 local function sanitizeInput(value)
@@ -26,14 +63,23 @@ local function sanitizeInput(value)
     return trim(value)
 end
 
+-- The client replaces %f (focus name) and %t (target name) in
+-- every outgoing chat line, case-insensitively, so an escape
+-- must never read %F. Bytes 0xF0-0xFF, which only occur in
+-- 4-byte UTF-8 characters, are written as ~FX instead, and ~
+-- itself is always escaped so it can only start one of those.
 function Chatter:Encode(value)
     value = sanitizeInput(value)
     if value == "" then
         return "-"
     end
 
-    return (value:gsub("([^%w%-_%.~])", function(char)
-        return string.format("%%%02X", string.byte(char))
+    return (value:gsub("([^%w%-_%.])", function(char)
+        local byte = string.byte(char)
+        if byte >= 0xF0 then
+            return string.format("~%02X", byte)
+        end
+        return string.format("%%%02X", byte)
     end))
 end
 
@@ -80,6 +126,146 @@ end
 
 function Chatter:SendCommand(command)
     SendChatMessage(".llmc " .. command, "SAY")
+end
+
+function Chatter:QueueCommand(command)
+    table.insert(self.sendQueue, command)
+end
+
+function Chatter:FlushSendQueue()
+    self.sendQueue = {}
+    self.sendElapsed = 0
+end
+
+function Chatter:HandleSendQueue(elapsed)
+    if #self.sendQueue == 0 then
+        return
+    end
+
+    self.sendElapsed = self.sendElapsed + elapsed
+    if self.sendElapsed < SEND_INTERVAL then
+        return
+    end
+
+    self.sendElapsed = 0
+    self:SendCommand(table.remove(self.sendQueue, 1))
+
+    if #self.sendQueue == 0 and self.uploadState == "sending" then
+        -- The commit has left, but the server has not said
+        -- what it did with it. The upload stays open until it
+        -- answers; only the wait for that answer is timed.
+        self:BeginConfirmWait()
+    end
+end
+
+-- Splits an encoded value on a character budget without ever
+-- cutting a %XX or ~FX escape in half.
+local function startsEscape(char)
+    return char == "%" or char == "~"
+end
+
+function Chatter:SplitEncoded(encoded, budget)
+    local chunks = {}
+    local total = string.len(encoded)
+    local pos = 1
+
+    while pos <= total do
+        local stop = pos + budget - 1
+        if stop >= total then
+            stop = total
+        elseif startsEscape(string.sub(encoded, stop, stop)) then
+            stop = stop - 1
+        elseif startsEscape(string.sub(encoded, stop - 1, stop - 1)) then
+            stop = stop - 2
+        end
+
+        if stop < pos then
+            return nil
+        end
+
+        table.insert(chunks, string.sub(encoded, pos, stop))
+        pos = stop + 1
+    end
+
+    return chunks
+end
+
+function Chatter:LockSave()
+    self.saveLocked = true
+    self.saveLockRemaining = 0
+    self:SetSaveEnabled(false)
+end
+
+-- The whole upload is out on the wire, so from here on
+-- silence is the server failing to answer rather than the
+-- queue still working through its chunks.
+function Chatter:BeginConfirmWait()
+    self.uploadState = "awaiting"
+    self.saveLockRemaining = SAVE_LOCK_TIMEOUT
+end
+
+function Chatter:UnlockSave()
+    self.saveLocked = false
+    self.saveLockRemaining = 0
+    self:UpdateSaveButton()
+end
+
+function Chatter:HandleSaveLock(elapsed)
+    if not self.saveLocked or self.uploadState ~= "awaiting" then
+        return
+    end
+
+    self.saveLockRemaining = self.saveLockRemaining - elapsed
+    if self.saveLockRemaining <= 0 then
+        self:AbortUpload(
+            "The server did not answer. Your traits are"
+                .. " still here — save again to retry.",
+            1, 0.82, 0
+        )
+    end
+end
+
+-- Ends an upload that will not complete, whether the server
+-- rejected it, never answered, or the player moved on.
+-- Everything belonging to it goes at once: a queue left
+-- draining would still send `commit` for an abandoned edit,
+-- and a poll left running would pull the pre-save profile
+-- back over the boxes.
+function Chatter:AbortUpload(message, r, g, b)
+    if self.uploadGuid then
+        self:FlushSendQueue()
+        -- Ignored by the server when it holds nothing staged,
+        -- so it is safe from every abort path.
+        self:SendCommand("cancel " .. self.uploadGuid)
+    end
+    self.uploadGuid = nil
+    self.uploadState = nil
+    self:StopTonePoll()
+    self:StopBackstoryPoll()
+    self:RestoreUnsavedTraits()
+    self:UnlockSave()
+    if message then
+        self:SetStatus(message, r, g, b)
+    end
+end
+
+-- Puts the traits the player typed back into both editors so
+-- an abandoned save can be corrected and retried rather than
+-- silently reverting to what the server still holds.
+function Chatter:RestoreUnsavedTraits()
+    local t = self.unsavedTraits
+    if not t or t.guid ~= self.selectedGuid then
+        return
+    end
+
+    local function apply(p)
+        if not p then return end
+        if p.trait1 then p.trait1:SetText(t.trait1 or "") end
+        if p.trait2 then p.trait2:SetText(t.trait2 or "") end
+        if p.trait3 then p.trait3:SetText(t.trait3 or "") end
+    end
+    apply(self.frame)
+    apply(self.traitsPanel)
 end
 
 function Chatter:StopTonePoll()
@@ -162,6 +348,11 @@ function Chatter:SetSaveEnabled(enabled)
 end
 
 function Chatter:UpdateSaveButton()
+    if self.saveLocked then
+        self:SetSaveEnabled(false)
+        return
+    end
+
     local loaded = self.loadedTraits
     if not loaded or self.pendingProfileGuid or self.forgetQueue then
         self:SetSaveEnabled(false)
@@ -288,17 +479,20 @@ function Chatter:RestoreWindowPosition()
     end
 end
 
-function Chatter:ApplyProfileToPanel(p, profile)
+-- `keepTraits` leaves the three trait boxes alone while still
+-- refreshing tone and backstory, for profiles that arrive
+-- when the player has edits the server has not accepted yet.
+function Chatter:ApplyProfileToPanel(p, profile, keepTraits)
     if not p then
         return
     end
-    if p.trait1 then
+    if p.trait1 and not keepTraits then
         p.trait1:SetText(profile.trait1 or "")
     end
-    if p.trait2 then
+    if p.trait2 and not keepTraits then
         p.trait2:SetText(profile.trait2 or "")
     end
-    if p.trait3 then
+    if p.trait3 and not keepTraits then
         p.trait3:SetText(profile.trait3 or "")
     end
     if p.tone then
@@ -333,6 +527,20 @@ function Chatter:ApplyProfile(profile)
     if profile.guid ~= self.selectedGuid or self.forgetQueue then
         return
     end
+    -- Everything the server sends while an upload is open
+    -- still describes the pre-save bot, down to the tone that
+    -- is about to be regenerated, so none of it is applied.
+    if self.uploadState and self.uploadGuid == profile.guid then
+        return
+    end
+    -- Once the upload is over but the edit was never accepted
+    -- — rejected, timed out — a late reply may still refresh
+    -- tone and backstory, but the trait boxes belong to the
+    -- player until they save successfully or pick another bot.
+    local keepTraits = (
+        self.unsavedTraits ~= nil
+        and self.unsavedTraits.guid == profile.guid
+    )
     self.pendingProfileGuid = nil
     self:SetRegenStoryEnabled(not self.pendingBackstoryGuid)
     local awaitingTone = (
@@ -347,12 +555,22 @@ function Chatter:ApplyProfile(profile)
         trait3 = profile.trait3 or "",
     }
 
-    self:ApplyProfileToPanel(self.frame, profile)
-    self:ApplyProfileToPanel(self.traitsPanel, profile)
-    self:ApplyProfileToPanel(self.storiesPanel, profile)
+    self:ApplyProfileToPanel(self.frame, profile, keepTraits)
+    self:ApplyProfileToPanel(
+        self.traitsPanel, profile, keepTraits
+    )
+    self:ApplyProfileToPanel(
+        self.storiesPanel, profile, keepTraits
+    )
 
-    -- Traits just loaded — no unsaved changes yet
-    self:SetSaveEnabled(false)
+    if keepTraits then
+        -- The boxes still hold an edit the server never took,
+        -- so Save has to stay available to retry it.
+        self:UpdateSaveButton()
+    else
+        -- Traits just loaded — no unsaved changes yet
+        self:SetSaveEnabled(false)
+    end
 
     ChatterDB = ChatterDB or {}
     ChatterDB.selectedGuid = profile.guid
@@ -392,6 +610,16 @@ function Chatter:SelectBot(guid)
     if self.pendingBackstoryGuid
         and self.pendingBackstoryGuid ~= guid then
         self:StopBackstoryPoll()
+    end
+
+    -- An edit belongs to the bot it was written for, so
+    -- moving to a different one drops it rather than carrying
+    -- it across, and leaves nothing half-staged behind.
+    if self.unsavedTraits and self.unsavedTraits.guid ~= guid then
+        self.unsavedTraits = nil
+    end
+    if self.uploadGuid and self.uploadGuid ~= guid then
+        self:AbortUpload()
     end
 
     self.selectedGuid = guid
@@ -444,8 +672,8 @@ function Chatter:SaveProfile()
         return
     end
 
-    if string.len(trait1) > 64 or string.len(trait2) > 64
-        or string.len(trait3) > 64 then
+    if utf8len(trait1) > 64 or utf8len(trait2) > 64
+        or utf8len(trait3) > 64 then
         self:SetStatus("Traits must stay under 64 characters.", 1, 0.2, 0.2)
         return
     end
@@ -477,6 +705,40 @@ function Chatter:SaveProfile()
     end
 end
 
+-- Uploads the traits one `put` per chunk, then commits.
+-- Returns false if a trait somehow refuses to split.
+function Chatter:QueueChunkedSave(guid, t)
+    local fields = {
+        { "t1", t.trait1 },
+        { "t2", t.trait2 },
+        { "t3", t.trait3 },
+    }
+
+    local queued = {}
+    for _, field in ipairs(fields) do
+        local chunks = self:SplitEncoded(
+            self:Encode(field[2]), CHUNK_BUDGET
+        )
+        if not chunks then
+            return false
+        end
+        for i = 1, #chunks do
+            table.insert(queued, string.format(
+                "put %d %s %d %d %s",
+                guid, field[1], i, #chunks, chunks[i]
+            ))
+        end
+    end
+
+    for _, command in ipairs(queued) do
+        self:QueueCommand(command)
+    end
+    self:QueueCommand(string.format("commit %d", guid))
+    self.uploadGuid = guid
+    self.uploadState = "sending"
+    return true
+end
+
 function Chatter:DoSaveProfile()
     local t = self.pendingTraits
     if not t or t.guid ~= self.selectedGuid
@@ -487,15 +749,45 @@ function Chatter:DoSaveProfile()
     local guid = self.selectedGuid
     self:StopTonePoll()
     self:StopBackstoryPoll()
-    self:SendCommand(
-        string.format(
-            "set %d %s %s %s",
-            guid,
-            self:Encode(t.trait1),
-            self:Encode(t.trait2),
-            self:Encode(t.trait3)
-        )
+    self:FlushSendQueue()
+
+    local line = string.format(
+        "set %d %s %s %s",
+        guid,
+        self:Encode(t.trait1),
+        self:Encode(t.trait2),
+        self:Encode(t.trait3)
     )
+
+    -- Remember what the player typed before anything can
+    -- overwrite the boxes: until the server confirms the save
+    -- this is the only copy of the edit that exists.
+    self.unsavedTraits = {
+        guid = guid,
+        trait1 = t.trait1,
+        trait2 = t.trait2,
+        trait3 = t.trait3,
+    }
+    self.pendingTraits = nil
+
+    if string.len(".llmc " .. line) <= MAX_CHAT_LENGTH then
+        self.uploadGuid = guid
+        self.uploadState = "sending"
+        self:SendCommand(line)
+        self:LockSave()
+        -- A single line is already gone, so the wait for the
+        -- answer starts immediately.
+        self:BeginConfirmWait()
+    elseif self:QueueChunkedSave(guid, t) then
+        self:LockSave()
+    else
+        self.unsavedTraits = nil
+        self:SetStatus(
+            "Could not send these traits.", 1, 0.2, 0.2
+        )
+        return
+    end
+
     -- Start polls immediately so placeholders appear
     -- without waiting for the server round-trip
     self:StartTonePoll(guid)
@@ -505,7 +797,6 @@ function Chatter:DoSaveProfile()
             .. " and backstory...",
         1, 0.82, 0
     )
-    self.pendingTraits = nil
 end
 
 function Chatter:GetSelectedName()
@@ -649,6 +940,12 @@ function Chatter:HandleBackstoryPayload(rest)
     local numGuid = tonumber(guid)
     local text = self:Decode(encoded or "-")
 
+    -- Stale while an upload is still open: this is the story
+    -- the save is about to replace or regenerate.
+    if self.uploadState and self.uploadGuid == numGuid then
+        return
+    end
+
     -- Only apply non-empty backstory to boxes;
     -- empty means still generating — preserve
     -- the "Creating background story..." placeholder
@@ -729,6 +1026,13 @@ function Chatter:HandleSystemMessage(message)
         if guid and name and tonumber(guid) == self.selectedGuid
             and not self.forgetQueue then
             self.selectedGuid = tonumber(guid)
+            -- The server applied the edit. Only now is the
+            -- upload over and the typed text the saved text.
+            self:FlushSendQueue()
+            self.uploadGuid = nil
+            self.uploadState = nil
+            self.unsavedTraits = nil
+            self:UnlockSave()
             local changed = (flag == "changed")
             if changed then
                 -- Polls were started in DoSaveProfile;
@@ -788,9 +1092,16 @@ function Chatter:HandleSystemMessage(message)
         local _, encoded = string.match(
             rest, "^(%S+)%s*(.-)$"
         )
-        self:SetStatus(
-            self:Decode(encoded), 1, 0.2, 0.2
-        )
+        local text = self:Decode(encoded)
+        if self.uploadState then
+            -- The rejection belongs to the save in flight, so
+            -- the whole save ends here — queue, polls and all
+            -- — with the player's traits handed back.
+            self:AbortUpload(text, 1, 0.2, 0.2)
+        else
+            self:UnlockSave()
+            self:SetStatus(text, 1, 0.2, 0.2)
+        end
     end
 end
 
@@ -822,6 +1133,8 @@ SlashCmdList["CHATTER"] = function()
 end
 
 Chatter:SetScript("OnUpdate", function(self, elapsed)
+    self:HandleSendQueue(elapsed)
+    self:HandleSaveLock(elapsed)
     if self.pendingRoster then
         self.rosterElapsed = (self.rosterElapsed or 0) + elapsed
         if self.rosterElapsed >= 10 then
